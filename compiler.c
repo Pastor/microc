@@ -26,6 +26,13 @@ struct Buffer
 };
 #endif
 
+struct Context
+{
+    void           *deftab;
+    void           *symtab;
+    struct Context *parent;
+};
+
 enum TokenType
 {
     T_START,
