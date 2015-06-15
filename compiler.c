@@ -6,338 +6,190 @@
 
 #pragma warning(disable: 4996)
 
-#define BUFFER_BULK_SIZE 256
-#define BUFFER_READ_SIZE 256
-
-#if !defined(BUFFER_FILE_STRUCT)
-struct Buffer
-{
-    uint8_t * data;
-    size_t    allocated;
-    size_t    size;
-    size_t    it;
-};
-#else
-struct Buffer
-{
-    FILE   *  fd;
-    size_t    size;
-    size_t    it;
-};
-#endif
-
-struct Context
-{
-    void           *deftab;
-    void           *symtab;
-    struct Context *parent;
-};
-
-enum TokenType
+enum TT
 {
     T_START,
-    T_STRING,
+    T_SYMBOL,
     T_NUMBER,
-    T_LITERAL,
-    T_SYMBOL
+    T_STRING,
+    T_LITERAL
 };
 
-struct Token
+struct token
 {
-    size_t         offset;
-    size_t         size;
-    enum TokenType type;
+    int           start;
+    int           size;
+    enum TT       type;
+    struct token *next;
+    struct token *prev;
 };
 
-/** Linked list */
-struct Node
+struct tokenbuf
 {
-    void        * data;
-    struct Node * next;
+    FILE         *fd;
+    int           id;
+    int           ch;
+    char         *buf;
+    int           allocated;
+    int           readed;
 };
-
-__inline struct Node *
-listCreate(void *data)
-{
-    struct Node *ret = (struct Node *)malloc(sizeof(struct Node));
-    ret->data = data;
-    ret->next = NULL;
-    return ret;
-}
-
-__inline struct Node *
-listAppend(struct Node *node, void * data)
-{
-    struct Node *ret = listCreate(data);
-    while (node->next != NULL)
-        node = node->next;
-    node->next = ret;
-    return ret;
-}
 
 __inline void
-listRemove(struct Node *node, void (__cdecl * pfnFree)(void *memory))
+tokenbuf_clean(struct tokenbuf *buf)
 {
-    struct Node *temp = node;
-
-    if (temp == NULL)
-        return;
-    if (pfnFree != NULL) {
-        do {
-            if (temp->data)
-                (*pfnFree)(temp->data);
-        } while ((temp = temp->next) != NULL);
-        temp = node;
-    }
-    do {
-        node = node->next;
-        free(temp);
-        temp = node;
-    } while ( node != NULL );
+    if (buf->buf)
+        free(buf->buf);
+    buf->buf = NULL;
+    buf->readed = 0;
+    buf->allocated = 0;
+    buf->ch = -1;
+    buf->id = 0;
+    if (buf->fd)
+        fclose(buf->fd);
+    buf->fd = NULL;
 }
 
-/** Buffer */
-static void bufferCreate(struct Buffer **buffer, size_t size);
-static void bufferDelete(struct Buffer **buffer);
-static void bufferAppend(struct Buffer *buffer, const uint8_t *data, size_t size);
-static void bufferInsert(struct Buffer *buffer, size_t start, const uint8_t *data, size_t size);
-static void bufferReadName(struct Buffer **buffer, const char * const filename);
-static void bufferReadFile(struct Buffer **buffer, FILE *fd);
-/** Lexer */
-__inline int 
-lexer_eof(struct Buffer *buffer)
+__inline int
+tokenbuf_eof(struct tokenbuf *buf)
 {
-    return buffer->it >= buffer->size;
-}
-
-__inline int 
-lexer_ch(struct Buffer *buffer)
-{
-    return (int)buffer->data[buffer->it];
-}
-
-__inline int 
-lexer_isdigit(struct Buffer *buffer)
-{
-    return isdigit( lexer_ch(buffer) );
-}
-
-__inline int 
-lexer_isalpha(struct Buffer *buffer)
-{
-    return isalpha( lexer_ch(buffer) );
-}
-
-__inline int 
-lexer_isspace(struct Buffer *buffer)
-{
-    return isspace( lexer_ch(buffer) );
-}
-
-__inline int 
-lexer_next(struct Buffer *buffer)
-{
-    ++buffer->it;
-    return lexer_eof(buffer);
+    return  buf->id >= buf->readed && feof(buf->fd);
 }
 
 __inline void 
-lexer_skipws(struct Buffer *buffer)
+tokenbuf_next(struct tokenbuf *buf)
 {
-    while (!lexer_eof(buffer) && lexer_isspace(buffer)) {
-        lexer_next(buffer);
-    }
-}
-
-__inline void 
-lexer_number(struct Buffer *buffer, struct Token *token)
-{
-    lexer_next(buffer);
-}
-
-__inline void
-lexer_literal(struct Buffer *buffer, struct Token *token)
-{
-    lexer_next(buffer);
-}
-
-__inline void
-lexer_string(struct Buffer *buffer, struct Token *token)
-{
-    lexer_next(buffer);
-}
-
-static void
-lexer(struct Buffer *buffer, struct Node **tokens)
-{
-    struct Token * start = (struct Token *)malloc(sizeof(struct Token));
-    start->offset = 0;
-    start->size = 0;
-    start->type = T_START;
-    (*tokens) = listCreate(start);
-    buffer->it = 0;
-    while (!lexer_eof(buffer)) {
-        lexer_skipws(buffer);
-        struct Token *token = (struct Token *)malloc(sizeof(struct Token));
-        if (lexer_isdigit(buffer)) {
-            lexer_number(buffer, token);
-        } else if (lexer_isalpha(buffer)) {
-            lexer_literal(buffer, token);
+    if (buf->allocated <= buf->id) {
+        buf->allocated += 512;
+        if (buf->buf == NULL) {
+            buf->buf = (char *)malloc(buf->allocated);
         } else {
-            int ch = lexer_ch(buffer);
-            if (ch == '"') {
-                lexer_string(buffer, token);
-            } else {
-                lexer_next(buffer);
-            }
-        }
-        listAppend((*tokens), token);
-        
+            buf->buf = (char *)realloc(buf->buf, buf->allocated);
+        }        
+        memset(buf->buf + buf->id, 0, buf->allocated - buf->id);
+        buf->readed = fread(buf->buf + buf->id, 1, 512, buf->fd);
+        buf->readed = buf->id + buf->readed;
+    }
+    buf->ch = buf->buf[buf->id];
+    buf->id++;
+}
+
+static void 
+token_create(struct token **tok, int start, int size, enum TT type)
+{
+    (*tok) = (struct token *)malloc(sizeof(struct token));
+    (*tok)->start = start;
+    (*tok)->size = size;
+    (*tok)->type = type;
+    (*tok)->next = (*tok);
+    (*tok)->prev = (*tok);
+}
+
+static void
+token_remove(struct token **tok)
+{
+    struct token *prev = (*tok)->prev;
+    struct token *next = (*tok)->next;
+    if ((*tok) != next && prev != next) {
+        next->prev = prev;
+        prev->next = next;
+    }
+    free((*tok));
+    (*tok) = NULL;
+}
+
+static struct token *
+token_add(struct token **tok, int start, int size, enum TT type)
+{
+    struct token *created;
+    token_create(&created, start, size, type);
+    created->next = (*tok);
+    created->prev = (*tok)->prev;
+    (*tok)->prev->next = created;
+    (*tok)->prev = created; 
+    return created;
+}
+
+static void
+token_free(struct token **tok)
+{
+}
+
+static void
+token_parse_number(struct token **tok, struct tokenbuf *buf)
+{
+    int start = buf->id;
+    while (!tokenbuf_eof(buf) && isdigit(buf->ch)) {
+        tokenbuf_next(buf);
+    }
+    token_add(tok, start, buf->id - start, T_NUMBER);
+}
+
+static void
+token_parse_literal(struct token **tok, struct tokenbuf *buf)
+{
+    int start = buf->id;
+    while (!tokenbuf_eof(buf) && (isdigit(buf->ch) || isalpha(buf->ch) || buf->ch == '_')) {
+        tokenbuf_next(buf);
+    }
+    token_add(tok, start, buf->id - start, T_LITERAL);
+}
+
+static void
+token_parse_string(struct token **tok, struct tokenbuf *buf)
+{
+    int start = buf->id + 1;
+    tokenbuf_next(buf);
+    while (!tokenbuf_eof(buf) && (buf->ch != '\"')) {
+        tokenbuf_next(buf);
+    }
+    token_add(tok, start, buf->id - start, T_STRING);
+    tokenbuf_next(buf);
+}
+
+static void
+token_parse_skipws(struct tokenbuf *buf)
+{
+    while (!tokenbuf_eof(buf) && (isspace(buf->ch))) {
+        tokenbuf_next(buf);
     }
 }
 
-/***********/
-
-static struct Buffer *
-lookupFile(const char* const lpszFileName, struct Node *paths);
-
 static void
-lookupInclude(struct Node *paths, const char * const filename, FILE **fd);
+token_parse(struct token **tok, struct tokenbuf *buf)
+{
+    tokenbuf_next(buf);
+    while (!tokenbuf_eof(buf)) {
+        token_parse_skipws(buf);
+        if (isdigit(buf->ch)) {
+            token_parse_number(tok, buf);
+        } else if (isalpha(buf->ch)) {
+            token_parse_literal(tok, buf);
+        } else if (buf->ch == '\"') {
+            token_parse_string(tok, buf);
+        } else {
+            token_add(tok, buf->id, 1, T_SYMBOL);
+            tokenbuf_next(buf);
+        }
+    }
+}
 
 int
 main(int argc, char **argv)
 {
-    struct Buffer *readed = NULL;
-    struct Node   *paths  = NULL;
-    struct Node   *tokens = NULL;
-
-    paths = listCreate(".");
-    listAppend(paths, "C:\\Program Files (x86)\\Microsoft Visual Studio 12.0\\VC\\include");
-    readed = lookupFile("compiler.c", paths);
-    lexer(readed, &tokens);
-    listRemove(tokens, free);
-    listRemove(paths, NULL);
-    bufferDelete(&readed);
-    return 0;
-}
-
-static struct Buffer *
-lookupFile(const char* const lpszFileName, struct Node *paths)
-{
-    struct Buffer *buffer = NULL;    
-    FILE *fd = NULL;
-    bufferReadName(&buffer, lpszFileName);
-#if 1
-    lookupInclude(paths, "stdio.h", &fd);
-    if (fd)
-        fclose(fd);
-#endif
-    return buffer;
-}
-
-static void
-lookupInclude(struct Node *paths, const char * const filename, FILE **fd)
-{
-    struct Node *temp = paths;
-    char *apath;
-    size_t flen = strlen(filename);
-    if (fd == NULL || paths == NULL)
-        return;
-    do {
-        size_t size = strlen((const char *)temp->data) + flen + 5;
-        apath = (char *)malloc(size);
-        memset(apath, 0, size);
-        strcpy(apath, (const char *)temp->data);
-        strcat(apath, "/");
-        strcat(apath, filename);
-        (*fd) = fopen(apath, "r");
-        free(apath);
-        apath = NULL;
-        if ((*fd))
-            return;
-    } while ((temp = temp->next) != NULL);
-}
-
-static void 
-bufferCreate(struct Buffer **buffer, size_t size)
-{
-    if (buffer) {
-        (*buffer) = (struct Buffer *)malloc(sizeof(struct Buffer));
-        (*buffer)->size = 0;
-        (*buffer)->allocated = size;
-        (*buffer)->it = 0;
-        (*buffer)->data = (uint8_t *)malloc(size);
-    }
-}
-
-static void
-bufferDelete(struct Buffer **buffer)
-{
-    if (buffer) {
-        if ((*buffer)) {
-            if ((*buffer)->data)
-                free((*buffer)->data);
-            (*buffer)->data = NULL;
-            (*buffer)->size = 0;
-            (*buffer)->allocated = 0;
-        }
-        (*buffer) = NULL;
-    }
-}
-
-static void 
-bufferAppend(struct Buffer *buffer, const uint8_t *data, size_t size)
-{
-    if (buffer == NULL || data == NULL)
-        return;
-    if (buffer->allocated < buffer->size + size) {
-        buffer->allocated += size + BUFFER_BULK_SIZE;
-        buffer->data = (uint8_t *)realloc(buffer->data, buffer->allocated);
-    }
-    memcpy(buffer->data + buffer->size, data, size);
-    buffer->size += size;
-    /**Empty tail*/
-    memset(buffer->data + buffer->size, 0, buffer->allocated - buffer->size);
-}
-
-static void 
-bufferInsert(struct Buffer *buffer, size_t start, const uint8_t *data, size_t size)
-{
-    size_t it;
-    if (buffer == NULL || data == NULL || start > buffer->size)
-        return;
-    buffer->allocated += size;
-    buffer->data = (uint8_t *)realloc(buffer->data, buffer->allocated);
-    for (it = buffer->size; it >= start; --it) {
-        buffer->data[it + size] = buffer->data[it];
-    }
-    memcpy(buffer->data + start, data, size);
-    buffer->size += size;
-}
-
-static void 
-bufferReadName(struct Buffer **buffer, const char * const filename)
-{
     FILE *fd;
-    if (buffer == NULL || filename == NULL)
-        return;    
-    fd = fopen(filename, "r");
-    if (fd) {
-        bufferReadFile(buffer, fd);
-        fclose(fd);
-    } else {
-        fprintf(stderr, "File %s not found\n", filename);
-    }
-}
+    struct token *result = NULL;
+    
 
-static void
-bufferReadFile(struct Buffer **buffer, FILE *fd)
-{
-    size_t  readed;
-    uint8_t fbuf[BUFFER_READ_SIZE];
-    bufferDelete(buffer);
-    bufferCreate(buffer, BUFFER_BULK_SIZE);
-    while ((readed = fread(fbuf, 1, BUFFER_READ_SIZE, fd)) > 0) {
-        bufferAppend((*buffer), fbuf, readed);
+    fd = fopen("test.c", "r");
+    if (fd != NULL) {
+        struct tokenbuf buf = { NULL, 0, EOF, NULL, 0 };
+
+        buf.fd = fd;
+        token_create(&result, 0, 0, T_START);
+        token_parse(&result, &buf);
+        fclose(fd);
+        tokenbuf_clean(&buf);
     }
+    token_free(&result);
+    return 0;
 }
