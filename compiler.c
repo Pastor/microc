@@ -6,190 +6,177 @@
 
 #pragma warning(disable: 4996)
 
-enum TT
+#define TRUE                  1
+#define FALSE                 0
+#define LEXBUF_DEFAULT_SIZE 256
+
+enum lexer_type
 {
-    T_START,
-    T_SYMBOL,
-    T_NUMBER,
-    T_STRING,
-    T_LITERAL
+    lexer_unknown,
+    lexer_string,
+    lexer_character,
+    lexer_literal,
+    lexer_number,
+    lexer_symbol
 };
 
-struct token
+struct lexer
 {
-    int           start;
-    int           size;
-    enum TT       type;
-    struct token *next;
-    struct token *prev;
-};
+    FILE  *fd;
+    int    line;
+    int    id;
+    int    start;
+    int    ch;
 
-struct tokenbuf
-{
-    FILE         *fd;
-    int           id;
-    int           ch;
-    char         *buf;
-    int           allocated;
-    int           readed;
+    char  *buf;
+    int    size;
+    int    allocated;
+    enum lexer_type type;
 };
 
 __inline void
-tokenbuf_clean(struct tokenbuf *buf)
+lexer_init(struct lexer **lexer, const char * const filename)
 {
-    if (buf->buf)
-        free(buf->buf);
-    buf->buf = NULL;
-    buf->readed = 0;
-    buf->allocated = 0;
-    buf->ch = -1;
-    buf->id = 0;
-    if (buf->fd)
-        fclose(buf->fd);
-    buf->fd = NULL;
+    (*lexer) = (struct lexer *)malloc(sizeof(struct lexer));
+    (*lexer)->line = 1;
+    (*lexer)->id = 1;
+    (*lexer)->buf = (char *)malloc(LEXBUF_DEFAULT_SIZE);
+    (*lexer)->size = 0;
+    (*lexer)->ch = -1;
+    (*lexer)->allocated = LEXBUF_DEFAULT_SIZE;
+    (*lexer)->fd = fopen(filename, "r");
+}
+
+__inline void
+lexer_destroy(struct lexer **lexer)
+{
+    fclose((*lexer)->fd);
+    free((*lexer)->buf);
+    free((*lexer));
+    (*lexer) = NULL;
+}
+
+__inline void
+lexer_getch(struct lexer *lexer)
+{
+    lexer->ch = fgetc(lexer->fd);    
+}
+
+__inline void
+lexer_putch(struct lexer *lexer)
+{
+    lexer->buf[lexer->size] = lexer->ch;
+    lexer->size++;
+    lexer->id++;
+    if (lexer->size >= lexer->allocated) {
+        lexer->allocated += 256;
+        lexer->buf = (char *)realloc(lexer->buf, lexer->allocated);
+        memset(lexer->buf + lexer->size, 0, lexer->allocated - lexer->size);
+    }
+}
+
+__inline void
+lexer_skipline(struct lexer *lexer)
+{
+    while (!feof(lexer->fd) && (lexer->ch != '\n')) {
+        lexer_getch(lexer);
+    }
+}
+
+__inline void
+lexer_reset(struct lexer *lexer)
+{
+    memset(lexer->buf, 0, lexer->allocated);
+    lexer->size = 0;
+    lexer->start = 0;
+    lexer->type = lexer_unknown;
 }
 
 __inline int
-tokenbuf_eof(struct tokenbuf *buf)
+lexer_next(struct lexer *lexer)
 {
-    return  buf->id >= buf->readed && feof(buf->fd);
+    lexer_reset(lexer);
+    if (feof(lexer->fd))
+        return FALSE;
+    /** skip whitespace */
+    while (!feof(lexer->fd) && isspace(lexer->ch)) {
+        if (lexer->ch == '\n') {
+            lexer->id = 1;
+            lexer->line++;
+        }
+        lexer_getch(lexer);
+    }    
+
+    lexer->start = lexer->id;
+    if (isdigit(lexer->ch)) {
+        while (!feof(lexer->fd) && isdigit(lexer->ch)) {
+            lexer_putch(lexer);
+            lexer_getch(lexer);
+        }
+        lexer->type = lexer_number;
+    } else if (isalpha(lexer->ch)) {
+        while (!feof(lexer->fd) && (isdigit(lexer->ch) || isalpha(lexer->ch) || lexer->ch == '_')) {
+            lexer_putch(lexer);
+            lexer_getch(lexer);
+        }
+        lexer->type = lexer_literal;
+    } else if (lexer->ch == '\'' || lexer->ch == '\"') {
+        int ch = lexer->ch;
+        lexer->type = ch == '\"' ? lexer_string : lexer_character;
+        lexer_getch(lexer);
+        while (!feof(lexer->fd) && lexer->ch != ch) {
+            if (lexer->ch == '\\') {
+                lexer_putch(lexer);
+                lexer_getch(lexer);
+            }
+            lexer_putch(lexer);
+            lexer_getch(lexer);
+        }
+        lexer_getch(lexer);
+    } else {
+        if (lexer->ch == '\n')
+            return FALSE;
+        lexer_putch(lexer);
+        lexer_getch(lexer);
+        lexer->type = lexer_symbol;
+    }
+    return TRUE;
 }
 
-__inline void 
-tokenbuf_next(struct tokenbuf *buf)
+static void
+parser_preprocessor(struct lexer *lexer)
 {
-    if (buf->allocated <= buf->id) {
-        buf->allocated += 512;
-        if (buf->buf == NULL) {
-            buf->buf = (char *)malloc(buf->allocated);
+    while (lexer_next(lexer)) {
+        if (lexer->type == lexer_symbol && lexer->buf[0] == '#') {
+            lexer_skipline(lexer);
         } else {
-            buf->buf = (char *)realloc(buf->buf, buf->allocated);
-        }        
-        memset(buf->buf + buf->id, 0, buf->allocated - buf->id);
-        buf->readed = fread(buf->buf + buf->id, 1, 512, buf->fd);
-        buf->readed = buf->id + buf->readed;
-    }
-    buf->ch = buf->buf[buf->id];
-    buf->id++;
-}
-
-static void 
-token_create(struct token **tok, int start, int size, enum TT type)
-{
-    (*tok) = (struct token *)malloc(sizeof(struct token));
-    (*tok)->start = start;
-    (*tok)->size = size;
-    (*tok)->type = type;
-    (*tok)->next = (*tok);
-    (*tok)->prev = (*tok);
-}
-
-static void
-token_remove(struct token **tok)
-{
-    struct token *prev = (*tok)->prev;
-    struct token *next = (*tok)->next;
-    if ((*tok) != next && prev != next) {
-        next->prev = prev;
-        prev->next = next;
-    }
-    free((*tok));
-    (*tok) = NULL;
-}
-
-static struct token *
-token_add(struct token **tok, int start, int size, enum TT type)
-{
-    struct token *created;
-    token_create(&created, start, size, type);
-    created->next = (*tok);
-    created->prev = (*tok)->prev;
-    (*tok)->prev->next = created;
-    (*tok)->prev = created; 
-    return created;
-}
-
-static void
-token_free(struct token **tok)
-{
-}
-
-static void
-token_parse_number(struct token **tok, struct tokenbuf *buf)
-{
-    int start = buf->id;
-    while (!tokenbuf_eof(buf) && isdigit(buf->ch)) {
-        tokenbuf_next(buf);
-    }
-    token_add(tok, start, buf->id - start, T_NUMBER);
-}
-
-static void
-token_parse_literal(struct token **tok, struct tokenbuf *buf)
-{
-    int start = buf->id;
-    while (!tokenbuf_eof(buf) && (isdigit(buf->ch) || isalpha(buf->ch) || buf->ch == '_')) {
-        tokenbuf_next(buf);
-    }
-    token_add(tok, start, buf->id - start, T_LITERAL);
-}
-
-static void
-token_parse_string(struct token **tok, struct tokenbuf *buf)
-{
-    int start = buf->id + 1;
-    tokenbuf_next(buf);
-    while (!tokenbuf_eof(buf) && (buf->ch != '\"')) {
-        tokenbuf_next(buf);
-    }
-    token_add(tok, start, buf->id - start, T_STRING);
-    tokenbuf_next(buf);
-}
-
-static void
-token_parse_skipws(struct tokenbuf *buf)
-{
-    while (!tokenbuf_eof(buf) && (isspace(buf->ch))) {
-        tokenbuf_next(buf);
-    }
-}
-
-static void
-token_parse(struct token **tok, struct tokenbuf *buf)
-{
-    tokenbuf_next(buf);
-    while (!tokenbuf_eof(buf)) {
-        token_parse_skipws(buf);
-        if (isdigit(buf->ch)) {
-            token_parse_number(tok, buf);
-        } else if (isalpha(buf->ch)) {
-            token_parse_literal(tok, buf);
-        } else if (buf->ch == '\"') {
-            token_parse_string(tok, buf);
-        } else {
-            token_add(tok, buf->id, 1, T_SYMBOL);
-            tokenbuf_next(buf);
+            break;
         }
     }
+}
+
+static void
+parser_program(struct lexer *lexer)
+{
+    lexer_reset(lexer);
+    lexer_getch(lexer);
+
+    parser_preprocessor(lexer);
+
+    do {
+        fprintf(stdout, "Line: %08d, Column: %03d, Type: %02d, Buffer: %s\n", lexer->line, lexer->start, lexer->type, lexer->buf);
+    } while (lexer_next(lexer));
 }
 
 int
 main(int argc, char **argv)
 {
-    FILE *fd;
-    struct token *result = NULL;
+    struct lexer *lexer = NULL;
     
 
-    fd = fopen("test.c", "r");
-    if (fd != NULL) {
-        struct tokenbuf buf = { NULL, 0, EOF, NULL, 0 };
-
-        buf.fd = fd;
-        token_create(&result, 0, 0, T_START);
-        token_parse(&result, &buf);
-        fclose(fd);
-        tokenbuf_clean(&buf);
-    }
-    token_free(&result);
+    lexer_init(&lexer, "test.c");
+    parser_program(lexer);
+    lexer_destroy(&lexer);
+    system("pause");
     return 0;
 }
