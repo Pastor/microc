@@ -79,8 +79,8 @@ decl_main1_end:
     ret
 section '.idata' import data readable
     library msvcr, 'msvcr120d.dll',\
-	    kernel32, 'kernel32.dll'
+            kernel32, 'kernel32.dll'
     import msvcr, \
-	   malloc, 'malloc',\
-	   free, 'free',\
-	   fclose, 'fclose'
+           malloc, 'malloc',\
+           free, 'free',\
+           fclose, 'fclose'
