@@ -66,11 +66,8 @@ int
 main(int argc, char **argv)
 {
     //start();
-    struct vm vm;
-
-    vm_init(&vm);
-    vm_compile(": SUM 10 60 + ;", &vm);
-
+    struct vm *vm = vm_create();
+    vm_compile(": SUM 10 60 + ;", vm);
     system("pause");
     return EXIT_SUCCESS;
 }
