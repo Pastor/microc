@@ -4,6 +4,8 @@
 #include <stdint.h>
 #include <windows.h>
 
+#include "vm.h"
+
 #define SIZE    1024
 
 /**
@@ -63,7 +65,12 @@ start()
 int
 main(int argc, char **argv)
 {
-    start();
+    //start();
+    struct vm vm;
+
+    vm_init(&vm);
+    vm_compile(": SUM 10 60 + ;", &vm);
+
     system("pause");
     return EXIT_SUCCESS;
 }
