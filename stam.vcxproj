@@ -146,11 +146,11 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="stam.c" />
-    <ClCompile Include="vm.c" />
+    <ClCompile Include="main.c" />
+    <ClCompile Include="fm.c" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="vm.h" />
+    <ClInclude Include="fm.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
