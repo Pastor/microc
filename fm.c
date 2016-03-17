@@ -22,6 +22,7 @@ typedef u32                uptr;
 #define DATA_SIZE          1024
 #define CALL_SIZE          1024
 #define ENTRY_SIZE         256
+#define STRING_TAB_SIZE    256
 
 struct entry {
     char *         name;
@@ -35,16 +36,31 @@ struct dict {
     struct entry e[ENTRY_SIZE];
 };
 
+struct str {
+    char          *string[STRING_TAB_SIZE];
+    u32            id;
+};
+
+#pragma push(pack, 1)
+struct data {
+    u32  flags;
+    u32  paylod;
+};
+#pragma pop()
+#define DATA_FLAG_INTEGER  0x01
+#define DATA_FLAG_STRING   0x02
+
 struct fm {
-    u8   memo[MEM_SIZE];
-    u32  ip;
-    u32  ic;
-    uptr data[DATA_SIZE];
-    u32  pdata;
-    uptr call[CALL_SIZE];
-    u32  pcall;
+    u8          memo[MEM_SIZE];
+    u32         ip;
+    u32         ic;
+    struct data data[DATA_SIZE];
+    u32         pdata;
+    uptr        call[CALL_SIZE];
+    u32         pcall;
 
     struct dict dict;
+    struct str  table;
 };
 
 enum instruct {
@@ -107,6 +123,58 @@ dict_find(struct dict *dict, const char * const name) {
     return 0;
 }
 
+static __inline struct data *
+data_peek(struct fm *vm)
+{
+    return &vm->data[vm->pdata];
+}
+
+static __inline struct data *
+data_pop(struct fm *vm)
+{
+    return &vm->data[--vm->pdata];
+}
+
+static __inline void
+data_push_integer(struct fm *vm, u32 value)
+{
+    vm->data[vm->pdata].flags = 0 | DATA_FLAG_INTEGER;
+    vm->data[vm->pdata].paylod = value;
+    ++vm->pdata;
+}
+
+static __inline u32
+data_pop_integer(struct fm *vm)
+{
+    u32 value = vm->data[--vm->pdata].paylod;
+    vm->data[vm->pdata].flags = 0;
+    return value;
+}
+
+static __inline void
+data_push_string(struct fm *vm, char * const string)
+{
+    u32 i;
+    int index = -1;
+
+    for (i = 0; i < STRING_TAB_SIZE; i++) {
+        if (vm->table.string[i] == 0)
+            continue;
+        if (!strcmp(vm->table.string[i], string)) {
+            index = i;
+            break;
+        }
+    }
+
+    if (index < 0) {
+        index = vm->table.id++;
+        vm->table.string[index] = _strdup(string);
+    }
+    vm->data[vm->pdata].flags = 0 | DATA_FLAG_STRING;
+    vm->data[vm->pdata].paylod = (u32)index;
+    ++vm->pdata;
+}
+
 void
 fm_run(struct fm *vm, unsigned int circles) {
     u32 it = 0;
@@ -115,33 +183,33 @@ fm_run(struct fm *vm, unsigned int circles) {
         switch ( vm->memo[vm->ip] ) {
             case ADD:
             {
-                u32 n1 = vm->data[--vm->pdata];
-                u32 n2 = vm->data[--vm->pdata];
-                vm->data[vm->pdata++] = n1 + n2;
+                u32 n1 = data_pop_integer(vm);
+                u32 n2 = data_pop_integer(vm);
+                data_push_integer(vm, n1 + n2);
                 vm->ip++;
                 break;
             }
             case SUB:
             {
-                u32 n1 = vm->data[--vm->pdata];
-                u32 n2 = vm->data[--vm->pdata];
-                vm->data[vm->pdata++] = n1 - n2;
+                u32 n1 = data_pop_integer(vm);
+                u32 n2 = data_pop_integer(vm);
+                data_push_integer(vm, n1 - n2);
                 vm->ip++;
                 break;
             }
             case MUL:
             {
-                u32 n1 = vm->data[--vm->pdata];
-                u32 n2 = vm->data[--vm->pdata];
-                vm->data[vm->pdata++] = n1 * n2;
+                u32 n1 = data_pop_integer(vm);
+                u32 n2 = data_pop_integer(vm);
+                data_push_integer(vm, n1 * n2);
                 vm->ip++;
                 break;
             }
             case DIV:
             {
-                u32 n1 = vm->data[--vm->pdata];
-                u32 n2 = vm->data[--vm->pdata];
-                vm->data[vm->pdata++] = n1 / n2;
+                u32 n1 = data_pop_integer(vm);
+                u32 n2 = data_pop_integer(vm);
+                data_push_integer(vm, n1 / n2);
                 vm->ip++;
                 break;
             }
@@ -150,12 +218,12 @@ fm_run(struct fm *vm, unsigned int circles) {
                 ++vm->ip;
                 u32 n = *((u32 *)&vm->memo[vm->ip]);
                 vm->ip += 4;
-                vm->data[vm->pdata++] = n;
+                data_push_integer(vm, n);
                 break;
             }
             case DUP:
             {
-                uptr d = vm->data[vm->pdata];
+                struct data d = vm->data[vm->pdata];
                 ++vm->ip;
                 vm->data[vm->pdata++] = d;
                 break;
@@ -168,9 +236,13 @@ fm_run(struct fm *vm, unsigned int circles) {
             }
             case DOT:
             {
-                u32 n = vm->data[--vm->pdata];
+                struct data *d = data_pop(vm);
                 ++vm->ip;
-                fprintf(stdout, "%d", n);
+                if (d->flags & DATA_FLAG_INTEGER) {
+                    fprintf(stdout, "%d", d->paylod);
+                } else {
+                    fprintf(stdout, "%s", vm->table.string[d->paylod]);
+                }
                 break;
             }
             case CALL:
@@ -185,13 +257,18 @@ fm_run(struct fm *vm, unsigned int circles) {
             case PUT_STRING:
             {
                 u32 d;
+                u32 len;
+                char *text;
+
                 ++vm->ip;
-                u32 len = *((u32 *)&vm->memo[vm->ip]);
+                len = *((u32 *)&vm->memo[vm->ip]);
                 vm->ip += 4;
+                text = (char *)calloc(1, len + 1);
                 for ( d = 0; d < len; d++ ) {
-                    u8 ch = vm->memo[vm->ip++];
+                    text[d] = vm->memo[vm->ip++];
                 }
-                //TODO: Доделать
+                data_push_string(vm, text);
+                free(text);
                 break;
             }
             case RET:
@@ -226,7 +303,7 @@ fm_default(struct fm *vm) {
 }
 
 struct fm *
-    fm_create() {
+fm_create() {
     struct fm *vm = (struct fm *)calloc(1, sizeof(struct fm));
     memset(vm->memo, 0, sizeof(vm->memo));
     memset(vm->data, 0, sizeof(vm->data));
@@ -288,6 +365,8 @@ fm_compile(struct fm *vm, const char * const text) {
 
     while ( *p != 0 ) {
         p = tok_next(p, token);
+        if (token[0] == 0)
+            continue;
         if ( token[0] == ':' && token[1] == 0 ) {
             char name[sizeof(token)];
             u32  address = vm->ic;
@@ -344,7 +423,7 @@ fm_compile(struct fm *vm, const char * const text) {
             struct entry *e = dict_find(&vm->dict, token);
             if ( e == 0 ) {
                 if ( tok_isnumber(token) ) {
-                    vm->data[vm->pdata++] = strtol(token, 0, 10);
+                    vm->data[vm->pdata++].paylod = strtol(token, 0, 10);
                 } else {
                     fprintf(stderr, "Function %s not found\n", token);
                     return;
