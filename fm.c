@@ -15,7 +15,13 @@ typedef unsigned short     u16;
 typedef unsigned int       u32;
 typedef unsigned long long u64;
 
+#if defined(_M_IX86)
 typedef u32                uptr;
+#elif defined(_M_X64)
+typedef u64                uptr;
+#else
+#error "Unsupported architecture"
+#endif
 
 
 #define MEM_SIZE           4096
@@ -24,58 +30,58 @@ typedef u32                uptr;
 #define ENTRY_SIZE         256
 #define STRING_TAB_SIZE    256
 
-struct entry {
+struct Entry {
     char *         name;
     char *         text;
     u32            uptr;
     u8             opcod;
-    struct entry  *next;
+    struct Entry  *next;
 };
 
-struct dict {
-    struct entry e[ENTRY_SIZE];
+struct Dict {
+    struct Entry e[ENTRY_SIZE];
 };
 
-struct str {
+struct Str {
     char          *string[STRING_TAB_SIZE];
     u32            id;
 };
 
 #pragma push(pack, 1)
-struct data {
+struct Data {
     u32  flags;
-    u32  paylod;
+    uptr paylod;
 };
 #pragma pop()
 #define DATA_FLAG_INTEGER  0x01
 #define DATA_FLAG_STRING   0x02
 
-struct fm {
+struct Fm {
     u8          memo[MEM_SIZE];
     u32         ip;
     u32         ic;
-    struct data data[DATA_SIZE];
+    struct Data data[DATA_SIZE];
     u32         pdata;
     uptr        call[CALL_SIZE];
     u32         pcall;
 
-    struct dict dict;
-    struct str  table;
+    struct Dict dict;
+    struct Str  table;
 };
 
-enum instruct {
-    NOP = 0x00,
-    RET = 0x01,
-    CALL = 0x02,
-    ADD = 0x03,
-    SUB = 0x04,
-    MUL = 0x05,
-    DIV = 0x06,
-    PUSH = 0x10,
-    DROP = 0x11,
-    DUP = 0x12,
-    DOT = 0x13,
-    PUT_STRING = 0x14 /** PUT_STRING (len: 4) (CHAR: len) */
+enum Instruct {
+    Nop = 0x00,
+    Ret = 0x01,
+    Call = 0x02,
+    Add = 0x03,
+    Sub = 0x04,
+    Mul = 0x05,
+    Div = 0x06,
+    Push = 0x10,
+    Drop = 0x11,
+    Dup = 0x12,
+    Dot = 0x13,
+    PutString = 0x14 /** PUT_STRING (len: 4) (CHAR: len) */
 };
 
 static int
@@ -88,10 +94,10 @@ dict_hash(const char * const text) {
 }
 
 static void
-dict_add(struct dict * dict, const char * const name, u32 address, u8 opcod) {
-    int hash = dict_hash(name);
-    int id = hash & (ENTRY_SIZE - 1);
-    struct entry *it = &dict->e[id];
+dict_add(struct Dict * dict, const char * const name, u32 address, u8 opcod) {
+	const int hash = dict_hash(name);
+	const int id = hash & (ENTRY_SIZE - 1);
+    struct Entry *it = &dict->e[id];
     if (it != 0 && it->name != 0) {
         while (it) {
             if (!strcmp(it->name, name)) {
@@ -103,7 +109,7 @@ dict_add(struct dict * dict, const char * const name, u32 address, u8 opcod) {
                 break;
             it = it->next;
         }
-        it->next = (struct entry *)calloc(1, sizeof(struct entry));
+        it->next = (struct Entry *)calloc(1, sizeof(struct Entry));
         it = it->next;
     }
     it->name = _strdup(name);
@@ -111,11 +117,11 @@ dict_add(struct dict * dict, const char * const name, u32 address, u8 opcod) {
     it->opcod = opcod;
 }
 
-static struct entry *
-dict_find(struct dict *dict, const char * const name) {
-    int hash = dict_hash(name);
-    int id = hash & (ENTRY_SIZE - 1);
-    struct entry *it = &dict->e[id];
+static struct Entry *
+dict_find(struct Dict *dict, const char * const name) {
+	const int hash = dict_hash(name);
+	const int id = hash & (ENTRY_SIZE - 1);
+    struct Entry *it = &dict->e[id];
     while (it && it->name) {
         if (!strcmp(it->name, name))
             return it;
@@ -123,32 +129,32 @@ dict_find(struct dict *dict, const char * const name) {
     return 0;
 }
 
-static __inline struct data *
-data_peek(struct fm *vm) {
+static __inline struct Data *
+data_peek(struct Fm *vm) {
     return &vm->data[vm->pdata];
 }
 
-static __inline struct data *
-data_pop(struct fm *vm) {
+static __inline struct Data *
+data_pop(struct Fm *vm) {
     return &vm->data[--vm->pdata];
 }
 
 static __inline void
-data_push_integer(struct fm *vm, u32 value) {
+data_push_integer(struct Fm *vm, u32 value) {
     vm->data[vm->pdata].flags = 0 | DATA_FLAG_INTEGER;
     vm->data[vm->pdata].paylod = value;
     ++vm->pdata;
 }
 
 static __inline u32
-data_pop_integer(struct fm *vm) {
-    u32 value = vm->data[--vm->pdata].paylod;
+data_pop_integer(struct Fm *vm) {
+	const u32 value = vm->data[--vm->pdata].paylod;
     vm->data[vm->pdata].flags = 0;
     return value;
 }
 
 static __inline void
-data_push_string(struct fm *vm, char * const string) {
+data_push_string(struct Fm *vm, char * const string) {
     u32 i;
     int index = -1;
 
@@ -171,67 +177,59 @@ data_push_string(struct fm *vm, char * const string) {
 }
 
 void
-fm_run(struct fm *vm, unsigned int circles) {
+fm_run(struct Fm *vm, const unsigned int circles) {
     u32 it = 0;
     u8  is_running = 1;
     while (is_running) {
         switch (vm->memo[vm->ip]) {
-        case ADD:
-        {
-            u32 n1 = data_pop_integer(vm);
-            u32 n2 = data_pop_integer(vm);
+        case Add: {
+	        const u32 n1 = data_pop_integer(vm);
+	        const u32 n2 = data_pop_integer(vm);
             data_push_integer(vm, n1 + n2);
             vm->ip++;
             break;
         }
-        case SUB:
-        {
-            u32 n1 = data_pop_integer(vm);
-            u32 n2 = data_pop_integer(vm);
+        case Sub: {
+	        const u32 n1 = data_pop_integer(vm);
+	        const u32 n2 = data_pop_integer(vm);
             data_push_integer(vm, n1 - n2);
             vm->ip++;
             break;
         }
-        case MUL:
-        {
-            u32 n1 = data_pop_integer(vm);
-            u32 n2 = data_pop_integer(vm);
+        case Mul: {
+	        const u32 n1 = data_pop_integer(vm);
+	        const u32 n2 = data_pop_integer(vm);
             data_push_integer(vm, n1 * n2);
             vm->ip++;
             break;
         }
-        case DIV:
-        {
-            u32 n1 = data_pop_integer(vm);
-            u32 n2 = data_pop_integer(vm);
+        case Div: {
+	        const u32 n1 = data_pop_integer(vm);
+	        const u32 n2 = data_pop_integer(vm);
             data_push_integer(vm, n1 / n2);
             vm->ip++;
             break;
         }
-        case PUSH:
-        {
+        case Push: {
             ++vm->ip;
-            u32 n = *((u32 *)&vm->memo[vm->ip]);
+	        const u32 n = *((u32 *)&vm->memo[vm->ip]);
             vm->ip += 4;
             data_push_integer(vm, n);
             break;
         }
-        case DUP:
-        {
-            struct data d = vm->data[vm->pdata];
+        case Dup: {
+	        const struct Data d = vm->data[vm->pdata];
             ++vm->ip;
             vm->data[vm->pdata++] = d;
             break;
         }
-        case DROP:
-        {
+        case Drop: {
             ++vm->ip;
             --vm->pdata;
             break;
         }
-        case DOT:
-        {
-            struct data *d = data_pop(vm);
+        case Dot: {
+            struct Data *d = data_pop(vm);
             ++vm->ip;
             if (d->flags & DATA_FLAG_INTEGER) {
                 fprintf(stdout, "%d", d->paylod);
@@ -240,17 +238,15 @@ fm_run(struct fm *vm, unsigned int circles) {
             }
             break;
         }
-        case CALL:
-        {
+        case Call: {
             ++vm->ip;
-            u32 address = *((u32 *)&vm->memo[vm->ip]);
+	        const u32 address = *((u32 *)&vm->memo[vm->ip]);
             vm->ip += 4;
             vm->call[vm->pcall++] = vm->ip;
             vm->ip = address;
             break;
         }
-        case PUT_STRING:
-        {
+        case PutString: {
             u32 d;
             u32 len;
             char *text;
@@ -266,9 +262,8 @@ fm_run(struct fm *vm, unsigned int circles) {
             free(text);
             break;
         }
-        case RET:
-        {
-            u32 address = vm->call[--vm->pcall];
+        case Ret: {
+	        const u32 address = vm->call[--vm->pcall];
             vm->ip++;
             vm->ip = address;
             if (address == 0xffffffff) {
@@ -286,20 +281,20 @@ fm_run(struct fm *vm, unsigned int circles) {
 }
 
 static void
-fm_default(struct fm *vm) {
-    dict_add(&vm->dict, "+", 0, ADD);
-    dict_add(&vm->dict, "-", 0, SUB);
-    dict_add(&vm->dict, "/", 0, DIV);
-    dict_add(&vm->dict, "*", 0, MUL);
-    dict_add(&vm->dict, "DROP", 0, DROP);
-    dict_add(&vm->dict, "DUP", 0, DUP);
-    dict_add(&vm->dict, ".", 0, DOT);
-    dict_add(&vm->dict, ".\"", 0, PUT_STRING);
+fm_default(struct Fm *vm) {
+    dict_add(&vm->dict, "+", 0, Add);
+    dict_add(&vm->dict, "-", 0, Sub);
+    dict_add(&vm->dict, "/", 0, Div);
+    dict_add(&vm->dict, "*", 0, Mul);
+    dict_add(&vm->dict, "DROP", 0, Drop);
+    dict_add(&vm->dict, "DUP", 0, Dup);
+    dict_add(&vm->dict, ".", 0, Dot);
+    dict_add(&vm->dict, ".\"", 0, PutString);
 }
 
-struct fm *
-    fm_create() {
-    struct fm *vm = (struct fm *)calloc(1, sizeof(struct fm));
+struct Fm *
+fm_create() {
+    struct Fm *vm = (struct Fm *)calloc(1, sizeof(struct Fm));
     memset(vm->memo, 0, sizeof(vm->memo));
     memset(vm->data, 0, sizeof(vm->data));
     memset(vm->call, 0, sizeof(vm->call));
@@ -324,7 +319,7 @@ tok_next(char *p, char *token) {
 }
 
 static __inline char *
-tok_next_char(char *p, char *token, char ch) {
+tok_next_char(char *p, char *token, const char ch) {
     int d = 0;
 
     while (*p && *p != ch)
@@ -335,7 +330,7 @@ tok_next_char(char *p, char *token, char ch) {
 
 static __inline int
 tok_isnumber(char *token) {
-    u32 n = strlen(token);
+	const u32 n = strlen(token);
     u32 i = 0;
 
     if (!isdigit((int)token[0]))
@@ -349,12 +344,12 @@ tok_isnumber(char *token) {
 }
 
 static __inline int
-tok_isstring(char *token) {
+tok_isstring(const char *token) {
     return token[0] == '.' && token[1] == '"' && token[2] == 0;
 }
 
 void
-fm_compile(struct fm *vm, const char * const text) {
+fm_compile(struct Fm *vm, const char * const text) {
     char *p = (char *)text;
     char token[256];
 
@@ -364,14 +359,14 @@ fm_compile(struct fm *vm, const char * const text) {
             continue;
         if (token[0] == ':' && token[1] == 0) {
             char name[sizeof(token)];
-            u32  address = vm->ic;
+	        const u32  address = vm->ic;
             p = tok_next(p, token);
             strcpy(name, token);
             while (1) {
                 p = tok_next(p, token);
                 if (token[0] == ';' && token[1] == 0) {
-                    vm->memo[vm->ic++] = RET;
-                    dict_add(&vm->dict, name, address, NOP);
+                    vm->memo[vm->ic++] = Ret;
+                    dict_add(&vm->dict, name, address, Nop);
                     break;
                 } else if (token[0] == '(' && token[1] == 0) {
                     /** Комментарий */
@@ -380,8 +375,8 @@ fm_compile(struct fm *vm, const char * const text) {
                         p = tok_next(p, token);
                     }
                 } else if (tok_isnumber(token)) {
-                    u32 n = strtol(token, 0, 10);
-                    vm->memo[vm->ic++] = PUSH;
+	                const u32 n = strtol(token, 0, 10);
+                    vm->memo[vm->ic++] = Push;
                     *((u32 *)&vm->memo[vm->ic]) = n;
                     vm->ic += sizeof(u32);
                 } else if (tok_isstring(token)) {
@@ -393,29 +388,29 @@ fm_compile(struct fm *vm, const char * const text) {
                     if (*p != 0)
                         ++p;
                     len = strlen(token);
-                    vm->memo[vm->ic++] = PUT_STRING;
+                    vm->memo[vm->ic++] = PutString;
                     *((u32 *)&vm->memo[vm->ic]) = len;
                     vm->ic += sizeof(u32);
                     for (d = 0; d < strlen(token); d++) {
                         vm->memo[vm->ic++] = token[d];
                     }
                 } else {
-                    struct entry *e = dict_find(&vm->dict, token);
+                    struct Entry *e = dict_find(&vm->dict, token);
                     if (e == 0) {
                         fprintf(stderr, "Function %s not found\n", token);
                         return;
                     }
-                    if (e->opcod > NOP) {
+                    if (e->opcod > Nop) {
                         vm->memo[vm->ic++] = e->opcod;
                     } else {
-                        vm->memo[vm->ic++] = CALL;
+                        vm->memo[vm->ic++] = Call;
                         *((u32 *)&vm->memo[vm->ic]) = e->uptr;
                         vm->ic += sizeof(u32);
                     }
                 }
             }
         } else {
-            struct entry *e = dict_find(&vm->dict, token);
+            struct Entry *e = dict_find(&vm->dict, token);
             if (e == 0) {
                 if (tok_isnumber(token)) {
                     vm->data[vm->pdata++].paylod = strtol(token, 0, 10);
@@ -424,14 +419,14 @@ fm_compile(struct fm *vm, const char * const text) {
                     return;
                 }
             }
-            if (e->opcod > NOP) {
-                u32 ret = vm->ip;
+            if (e->opcod > Nop) {
+	            const u32 ret = vm->ip;
                 vm->ip = MEM_SIZE - 1;
                 vm->memo[MEM_SIZE - 1] = e->opcod;
                 fm_run(vm, 1);
                 vm->ip = ret;
             } else {
-                u32 ret = vm->ip;
+	            const u32 ret = vm->ip;
                 vm->call[vm->pcall++] = 0xffffffff;
                 vm->ip = e->uptr;
                 fm_run(vm, -1);

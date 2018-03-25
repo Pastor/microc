@@ -188,6 +188,7 @@ $RECYCLE.BIN/
 # Debug files
 *.dSYM/
 .vc
+.vs
 .xdbg
 *.fas
 *.opendb
